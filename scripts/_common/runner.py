@@ -1194,6 +1194,25 @@ def _check_output_extension(cmd: Sequence[str]) -> None:
            f"name it with one (for example {output + '.mp4'!r})", output=output)
 
 
+# #562: some outputs make ffmpeg write files nobody named -- HLS/DASH segments beside the playlist,
+# `frame%03d.png` as frame001.png... -- past the existing-output guard and the lock, so they are
+# refused, not listed. `-update` (look.py, scenes.py) writes the one name given and stays allowed.
+_MULTI_FILE_EXT = {".m3u8": "hls", ".mpd": "dash", ".chk": "webm_chunk"}
+_MULTI_FILE_MUXERS = frozenset({"hls", "dash", "webm_chunk", "segment", "ssegment", "tee"})
+
+
+def _check_multi_file_output(cmd: Sequence[str]) -> None:
+    output, opts = str(cmd[-1]), shape_of(cmd).output_opts
+    ext = os.path.splitext(output)[1].lower()
+    kind = next((opts[i + 1] for i in reversed(range(len(opts) - 1)) if opts[i] == "-f"), None) or _MULTI_FILE_EXT.get(ext)
+    if kind not in _MULTI_FILE_MUXERS:
+        kind = "a %d pattern" if ext in _IMAGE2_EXT and "-update" not in opts and re.search(r"%\d*d", output) else None
+    if kind:
+        refuse("input", "output_extension_unsupported",
+               f"output {output!r}: {kind} makes ffmpeg write files other than the one named, which this skill "
+               "does not check; name one file (.mp4, .mov, .mkv, .png)", output=output, extension=ext)
+
+
 # Extensions every FFmpeg build this skill supports maps to a muxer: an output named with one is
 # handed on without asking the build (no process). `.mka` is here because the Matroska audio muxer
 # shares its name with the Matroska one, so `ffmpeg -h muxer=matroska` never lists it.
@@ -2599,6 +2618,7 @@ def run(cmd: Sequence[str], *, quiet: bool = False, check: bool = True, ctx: "Op
         _check_no_overwrite_input(cmd)
         _check_output_path(cmd)
         _check_output_extension(cmd)
+        _check_multi_file_output(cmd)
         _check_container_codecs(cmd)
         _check_picture_into_audio_extension(cmd)
         _check_build_components(cmd)

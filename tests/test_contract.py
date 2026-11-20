@@ -10328,6 +10328,35 @@ class Issue415Tests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             _check_picture_into_audio_extension(["ffmpeg", "-y", "-i", str(src), "-c:v", "libx264", "-c:a", "aac", str(d / "a.m4a")])
 
+    def test_an_output_that_makes_ffmpeg_write_other_files_is_refused_before_it_runs(self):
+        """#562: the existing-output guard, the lock and staging read only the name given, while
+        HLS/DASH wrote segments beside it (`out0.ts`) and `frame%03d.png` became `frame001.png`:
+        files already there were replaced without --overwrite and the run failed afterwards. One
+        check in run() refuses them, dry runs included; `-update` (look.py) writes the one name."""
+        d = self.dir("multi_file")
+        src = d / "in.mp4"
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=160x90:r=25:d=2", "-c:v", "libx264", "-preset", "ultrafast",
+               "-pix_fmt", "yuv420p", src)
+        for kept, out in (("out0.ts", "out.m3u8"), ("init-stream0.m4s", "out.mpd"), ("frame001.png", "frame%03d.png")):
+            (d / kept).write_bytes(b"KEEP")
+            for extra in ([], ["--dry-run"]):
+                doc = json.loads(tool("proxy", src, "--width", "80", "-o", d / out, *extra, "--json", check=False).stdout)
+                self.assertEqual((doc["status"], doc["error"]["reason"]), ("failed", "output_extension_unsupported"), doc)
+            self.assertEqual((d / kept).read_bytes(), b"KEEP", kept)
+            self.assertFalse((d / out).exists(), out)
+        from _common.runner import _check_multi_file_output
+        for args, refused in ((["o.m3u8"], True), (["-f", "segment", "o.mp4"], True), (["-f", "tee", "o.mp4"], True),
+                              (["s%03d.jpg"], True), (["-update", "1", "s%03d.png"], False),
+                              (["-f", "mp4", "o.m3u8"], False), (["o%03d.mp4"], False), (["100%.png"], False)):
+            with self.subTest(args=args), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                if refused:
+                    with self.assertRaises(SystemExit):
+                        _check_multi_file_output(["ffmpeg", "-i", str(src), *args[:-1], str(d / args[-1])])
+                else:
+                    _check_multi_file_output(["ffmpeg", "-i", str(src), *args[:-1], str(d / args[-1])])
+        doc = json.loads(tool("look", src, "--at", "0.5", "-o", d / "shot%03d.png", "--json", check=False).stdout)
+        self.assertEqual(doc["status"], "completed", doc.get("error"))
+
     # -------------------------------------------------------------- default output names
     def test_a_webm_source_gets_an_mp4_default_output_that_the_run_writes(self):
         """The default output kept .webm while the encoders are x264/AAC: the dry run said
